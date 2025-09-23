@@ -228,6 +228,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script>
     const meetingInput = document.getElementById('meetingScript');
     const materialInput = document.getElementById('referenceMaterial');
@@ -455,6 +456,343 @@
 
       return `${cleanMaterial}\n\n---\n[업데이트 제안]\n${suggestions}`;
     }
+
+    const PPT_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    const PPT_MAIN_NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+    const PPT_CT_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
+    const REL_TYPE_SLIDE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide';
+    const REL_TYPE_SLIDE_LAYOUT = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout';
+
+    async function buildUpdatedPresentation(templateBuffer, sections = {}) {
+      if (typeof JSZip === 'undefined') {
+        throw new Error('JSZip가 로드되지 않았습니다. PPTX 생성을 위해 JSZip이 필요합니다.');
+      }
+
+      const zip = await JSZip.loadAsync(templateBuffer);
+      const slideNumbers = extractSlideNumbers(zip);
+
+      if (!slideNumbers.length) {
+        throw new Error('템플릿 PPTX에 복제할 슬라이드가 없습니다.');
+      }
+
+      const templateSlideNumber = slideNumbers[slideNumbers.length - 1];
+      const newSlideNumber = templateSlideNumber + 1;
+      const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`;
+      const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`;
+      const templateSlideXml = await zip.file(templateSlidePath).async('string');
+      const populatedSlideXml = ensureXmlDeclaration(
+        populateSlideXml(templateSlideXml, {
+          participantSummary: sections.participantSummary || '',
+          actionItems: sections.actionItems || '',
+          updatedMaterial: sections.updatedMaterial || ''
+        })
+      );
+
+      zip.file(newSlidePath, populatedSlideXml);
+
+      const templateRelsPath = `ppt/slides/_rels/slide${templateSlideNumber}.xml.rels`;
+      const layoutRelId = await determineLayoutRelationshipId(zip, templateRelsPath);
+      const newRelationshipsXml = ensureXmlDeclaration(
+        await cloneSlideRelationships(zip, templateSlideNumber, layoutRelId)
+      );
+      zip.file(`ppt/slides/_rels/slide${newSlideNumber}.xml.rels`, newRelationshipsXml);
+
+      const newSlideRelationshipId = await appendPresentationRelationship(zip, newSlideNumber);
+      await appendSlideIdEntry(zip, newSlideRelationshipId);
+      await ensureContentTypeForSlide(zip, newSlideNumber);
+      await updateSlideCount(zip, slideNumbers.length + 1);
+
+      const arrayBuffer = await zip.generateAsync({ type: 'uint8array' });
+      return arrayBuffer;
+    }
+
+    function extractSlideNumbers(zip) {
+      return Object.keys(zip.files)
+        .map((name) => {
+          const match = name.match(/^ppt\/slides\/slide(\d+)\.xml$/);
+          return match ? Number.parseInt(match[1], 10) : null;
+        })
+        .filter((value) => Number.isInteger(value))
+        .sort((a, b) => a - b);
+    }
+
+    function populateSlideXml(templateXml, sections) {
+      const replacements = new Map([
+        ['{{PARTICIPANT_SUMMARY}}', sections.participantSummary],
+        ['[[PARTICIPANT_SUMMARY]]', sections.participantSummary],
+        ['{{ACTION_ITEMS}}', sections.actionItems],
+        ['[[ACTION_ITEMS]]', sections.actionItems],
+        ['{{UPDATED_MATERIAL}}', sections.updatedMaterial],
+        ['[[UPDATED_MATERIAL]]', sections.updatedMaterial],
+        ['{{MEETING_SUMMARY}}', sections.participantSummary],
+        ['[[MEETING_SUMMARY]]', sections.participantSummary]
+      ]);
+
+      let output = templateXml;
+      replacements.forEach((value, placeholder) => {
+        if (typeof value !== 'string' || !placeholder) return;
+        if (!output.includes(placeholder)) return;
+        const escaped = escapeForPowerPoint(value);
+        const pattern = new RegExp(escapeForRegExp(placeholder), 'g');
+        output = output.replace(pattern, escaped);
+      });
+
+      return output;
+    }
+
+    function escapeForPowerPoint(text) {
+      if (!text) {
+        return '';
+      }
+
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;')
+        .replace(/\r?\n/g, '&#x0A;');
+    }
+
+    function escapeForRegExp(value) {
+      return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function ensureXmlDeclaration(xml) {
+      const trimmed = xml.trim();
+      if (trimmed.startsWith('<?xml')) {
+        return trimmed;
+      }
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${trimmed}`;
+    }
+
+    async function determineLayoutRelationshipId(zip, relsPath) {
+      if (!zip.file(relsPath)) {
+        return 'rId1';
+      }
+
+      const relsXml = await zip.file(relsPath).async('string');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(relsXml, 'application/xml');
+      if (doc.getElementsByTagName('parsererror').length) {
+        return 'rId1';
+      }
+
+      const relationships = Array.from(
+        doc.getElementsByTagNameNS(PPT_REL_NS, 'Relationship')
+      );
+
+      for (const relationship of relationships) {
+        const type = relationship.getAttribute('Type') || '';
+        if (type.includes('/slideLayout')) {
+          return relationship.getAttribute('Id') || 'rId1';
+        }
+      }
+
+      return 'rId1';
+    }
+
+    async function cloneSlideRelationships(zip, templateSlideNumber, layoutRelId) {
+      const relsPath = `ppt/slides/_rels/slide${templateSlideNumber}.xml.rels`;
+      const templateXml = zip.file(relsPath)
+        ? await zip.file(relsPath).async('string')
+        : '';
+
+      if (!templateXml.trim()) {
+        return buildFallbackSlideRelationships(layoutRelId);
+      }
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(templateXml, 'application/xml');
+
+      if (doc.getElementsByTagName('parsererror').length) {
+        return ensureLayoutRelationshipInRawXml(templateXml, layoutRelId);
+      }
+
+      const relationships = Array.from(
+        doc.getElementsByTagNameNS(PPT_REL_NS, 'Relationship')
+      );
+
+      const seenIds = new Set();
+      let hasLayoutRelationship = false;
+
+      relationships.forEach((relationship) => {
+        const type = relationship.getAttribute('Type') || '';
+        const currentId = relationship.getAttribute('Id');
+
+        if (currentId) {
+          seenIds.add(currentId);
+        }
+
+        if (type.includes('/slideLayout')) {
+          relationship.setAttribute('Id', layoutRelId || 'rId1');
+          hasLayoutRelationship = true;
+        }
+      });
+
+      if (!hasLayoutRelationship) {
+        const relationship = doc.createElementNS(PPT_REL_NS, 'Relationship');
+        relationship.setAttribute('Id', layoutRelId || uniqueRelationshipId(seenIds));
+        relationship.setAttribute('Type', REL_TYPE_SLIDE_LAYOUT);
+        relationship.setAttribute('Target', '../slideLayouts/slideLayout1.xml');
+        doc.documentElement.appendChild(relationship);
+      }
+
+      return new XMLSerializer().serializeToString(doc);
+    }
+
+    function ensureLayoutRelationshipInRawXml(templateXml, layoutRelId) {
+      if (templateXml.includes('slideLayout')) {
+        return templateXml;
+      }
+      const insertion = `\n  <Relationship Id="${layoutRelId || 'rId1'}" Type="${REL_TYPE_SLIDE_LAYOUT}" Target="../slideLayouts/slideLayout1.xml"/>`;
+      if (templateXml.includes('</Relationships>')) {
+        return templateXml.replace('</Relationships>', `${insertion}\n</Relationships>`);
+      }
+      return buildFallbackSlideRelationships(layoutRelId);
+    }
+
+    function buildFallbackSlideRelationships(layoutRelId) {
+      const id = layoutRelId || 'rId1';
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PPT_REL_NS}">\n  <Relationship Id="${id}" Type="${REL_TYPE_SLIDE_LAYOUT}" Target="../slideLayouts/slideLayout1.xml"/>\n</Relationships>`;
+    }
+
+    function uniqueRelationshipId(seenIds) {
+      let counter = seenIds.size + 1;
+      let candidate = `rId${counter}`;
+      while (seenIds.has(candidate)) {
+        counter += 1;
+        candidate = `rId${counter}`;
+      }
+      seenIds.add(candidate);
+      return candidate;
+    }
+
+    async function appendPresentationRelationship(zip, newSlideNumber) {
+      const relsPath = 'ppt/_rels/presentation.xml.rels';
+      const relsXml = await zip.file(relsPath).async('string');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(relsXml, 'application/xml');
+
+      if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('presentation.xml.rels 파싱에 실패했습니다.');
+      }
+
+      const root = doc.documentElement;
+      const relationships = Array.from(root.getElementsByTagNameNS(PPT_REL_NS, 'Relationship'));
+      const nextIdNumber = relationships.reduce((max, rel) => {
+        const idAttr = rel.getAttribute('Id') || '';
+        const match = idAttr.match(/(\d+)/);
+        const numeric = match ? Number.parseInt(match[1], 10) : 0;
+        return Math.max(max, numeric);
+      }, 0) + 1;
+      const newRelationshipId = `rId${nextIdNumber}`;
+
+      const relationship = doc.createElementNS(PPT_REL_NS, 'Relationship');
+      relationship.setAttribute('Id', newRelationshipId);
+      relationship.setAttribute('Type', REL_TYPE_SLIDE);
+      relationship.setAttribute('Target', `slides/slide${newSlideNumber}.xml`);
+      root.appendChild(relationship);
+
+      const updatedXml = new XMLSerializer().serializeToString(doc);
+      zip.file(relsPath, ensureXmlDeclaration(updatedXml));
+
+      return newRelationshipId;
+    }
+
+    async function appendSlideIdEntry(zip, relationshipId) {
+      const presentationPath = 'ppt/presentation.xml';
+      const presentationXml = await zip.file(presentationPath).async('string');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(presentationXml, 'application/xml');
+
+      if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('presentation.xml 파싱에 실패했습니다.');
+      }
+
+      const root = doc.documentElement;
+      let slideIdList = root.getElementsByTagNameNS(PPT_MAIN_NS, 'sldIdLst')[0];
+      if (!slideIdList) {
+        slideIdList = doc.createElementNS(PPT_MAIN_NS, 'p:sldIdLst');
+        root.appendChild(slideIdList);
+      }
+
+      const slideIds = Array.from(slideIdList.getElementsByTagNameNS(PPT_MAIN_NS, 'sldId'));
+      const nextSlideId = slideIds.reduce((max, element) => {
+        const idAttr = element.getAttribute('id');
+        const numeric = Number.parseInt(idAttr || '0', 10);
+        return Number.isFinite(numeric) && numeric > max ? numeric : max;
+      }, 255) + 1;
+
+      const slideIdElement = doc.createElementNS(PPT_MAIN_NS, 'p:sldId');
+      slideIdElement.setAttribute('id', String(nextSlideId));
+      slideIdElement.setAttributeNS(
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+        'r:id',
+        relationshipId
+      );
+      slideIdList.appendChild(slideIdElement);
+
+      const updatedXml = new XMLSerializer().serializeToString(doc);
+      zip.file(presentationPath, ensureXmlDeclaration(updatedXml));
+    }
+
+    async function ensureContentTypeForSlide(zip, newSlideNumber) {
+      const contentTypesPath = '[Content_Types].xml';
+      const contentTypesXml = await zip.file(contentTypesPath).async('string');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(contentTypesXml, 'application/xml');
+
+      if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('[Content_Types].xml 파싱에 실패했습니다.');
+      }
+
+      const root = doc.documentElement;
+      const overrides = Array.from(root.getElementsByTagNameNS(PPT_CT_NS, 'Override'));
+      const newPartName = `/ppt/slides/slide${newSlideNumber}.xml`;
+
+      const alreadyExists = overrides.some(
+        (override) => override.getAttribute('PartName') === newPartName
+      );
+
+      if (!alreadyExists) {
+        const override = doc.createElementNS(PPT_CT_NS, 'Override');
+        override.setAttribute('PartName', newPartName);
+        override.setAttribute(
+          'ContentType',
+          'application/vnd.openxmlformats-officedocument.presentationml.slide+xml'
+        );
+        root.appendChild(override);
+      }
+
+      const updatedXml = new XMLSerializer().serializeToString(doc);
+      zip.file(contentTypesPath, ensureXmlDeclaration(updatedXml));
+    }
+
+    async function updateSlideCount(zip, totalSlides) {
+      const appPath = 'docProps/app.xml';
+      if (!zip.file(appPath)) {
+        return;
+      }
+
+      const appXml = await zip.file(appPath).async('string');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(appXml, 'application/xml');
+
+      if (doc.getElementsByTagName('parsererror').length) {
+        return;
+      }
+
+      const appNs = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties';
+      const slidesElement = doc.getElementsByTagNameNS(appNs, 'Slides')[0];
+      if (slidesElement) {
+        slidesElement.textContent = String(totalSlides);
+        const updatedXml = new XMLSerializer().serializeToString(doc);
+        zip.file(appPath, ensureXmlDeclaration(updatedXml));
+      }
+    }
+
+    window.buildUpdatedPresentation = buildUpdatedPresentation;
   </script>
 </body>
 </html>
