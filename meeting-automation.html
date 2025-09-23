@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>회의 자동 정리 어시스턴트</title>
+  <style>
+    :root {
+      --bg-color: #f7f8fb;
+      --card-bg: #ffffff;
+      --accent: #4b6ef5;
+      --accent-dark: #324fd3;
+      --border: #dce1f0;
+      --text-primary: #1f2a44;
+      --text-secondary: #5a6887;
+      --shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Pretendard", "Noto Sans KR", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, rgba(75, 110, 245, 0.08), rgba(255, 255, 255, 0.95));
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 48px 24px 32px;
+      text-align: center;
+    }
+
+    header h1 {
+      margin: 0 0 12px;
+      font-size: 2.4rem;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      margin: 0;
+      font-size: 1rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 1200px;
+      margin: 0 auto 64px;
+      padding: 0 24px 48px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 32px;
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 24px;
+      padding: 32px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 1.4rem;
+      letter-spacing: -0.01em;
+    }
+
+    label {
+      font-weight: 600;
+      color: var(--text-secondary);
+      display: block;
+      margin-bottom: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 180px;
+      resize: vertical;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      padding: 16px;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      background: rgba(255, 255, 255, 0.95);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      color: var(--text-primary);
+    }
+
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(75, 110, 245, 0.2);
+      outline: none;
+    }
+
+    textarea[readonly] {
+      background: #f3f5ff;
+    }
+
+    button {
+      align-self: center;
+      padding: 14px 32px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+      color: #fff;
+      font-size: 1.05rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 16px 30px rgba(75, 110, 245, 0.25);
+      transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 20px 36px rgba(75, 110, 245, 0.35);
+      filter: brightness(1.02);
+    }
+
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 10px 20px rgba(75, 110, 245, 0.2);
+    }
+
+    .status {
+      text-align: center;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      min-height: 20px;
+    }
+
+    .result-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .result-card {
+      background: var(--card-bg);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: inset 0 0 0 1px rgba(220, 225, 240, 0.7);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .result-card h3 {
+      margin: 0;
+      font-size: 1.15rem;
+      color: var(--text-primary);
+    }
+
+    .result-card textarea {
+      min-height: 160px;
+      max-height: 320px;
+    }
+
+    @media (max-width: 1024px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 600px) {
+      header {
+        padding: 36px 16px 24px;
+      }
+
+      .panel {
+        padding: 24px;
+      }
+
+      textarea {
+        min-height: 160px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>회의 자동 정리 어시스턴트</h1>
+    <p>참여자별 회의록 요약, 담당자 지정 Action Item, 논의 기반 자료 업데이트를 한 번에 생성하세요.</p>
+  </header>
+
+  <main>
+    <section class="layout">
+      <section class="panel input-panel">
+        <div>
+          <label for="meetingScript">참여자 이름이 포함된 회의록 스크립트를 여기에 붙여넣으세요 (예: 김동찬: 안녕하세요)</label>
+          <textarea id="meetingScript" placeholder="김동찬: 오늘 스프린트 목표부터 공유드릴게요.
+최윤아: 데이터 전처리 이슈가 있었어요."></textarea>
+        </div>
+        <div>
+          <label for="referenceMaterial">기존 회의 자료를 여기에 붙여넣으세요</label>
+          <textarea id="referenceMaterial" placeholder="[회의 안건]
+1. 스프린트 목표
+2. 데이터 전처리 현황
+3. 다음 일정"></textarea>
+        </div>
+        <button id="processBtn" type="button">자동 정리 시작</button>
+        <p class="status" id="statusMessage"></p>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="result-card">
+          <h3>참여자별 회의록 요약</h3>
+          <textarea id="participantSummary" readonly></textarea>
+        </div>
+        <div class="result-card">
+          <h3>Action Items (담당자 포함)</h3>
+          <textarea id="actionItems" readonly></textarea>
+        </div>
+        <div class="result-card">
+          <h3>업데이트된 자료</h3>
+          <textarea id="updatedMaterial" readonly></textarea>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const meetingInput = document.getElementById('meetingScript');
+    const materialInput = document.getElementById('referenceMaterial');
+    const summaryOutput = document.getElementById('participantSummary');
+    const actionOutput = document.getElementById('actionItems');
+    const materialOutput = document.getElementById('updatedMaterial');
+    const processBtn = document.getElementById('processBtn');
+    const statusMessage = document.getElementById('statusMessage');
+
+    const ACTION_KEYWORDS = ['해야', '해주세요', '해 주세요', '부탁', '진행', '확인', '정리', '업데이트', '검토', '작성', '공유', '조사', '준비', '체크', 'todo', 'follow', 'update', 'review', 'deliver', 'plan', 'fix', 'resolve'];
+    const UPDATE_KEYWORDS = ['변경', '수정', '업데이트', '추가', '삭제', '조정', '확정', '결정', '반영', '새로운', '신규', '바꿔', '개선', 'update', 'change', 'modify'];
+    const STOPWORDS = ['그리고', '그래서', '하지만', '지금', '근데', '좀', '약간', '정도', '그러면', '우선', '일단', '혹시', '이번', '우리', '제가', '저는', '같아요', '부분', '내용', '하게', '하면', '부터', '어제', '오늘', '내일'];
+
+    processBtn.addEventListener('click', () => {
+      const meetingText = meetingInput.value.trim();
+      const materialText = materialInput.value.trim();
+
+      if (!meetingText) {
+        statusMessage.textContent = '회의록 스크립트를 입력해주세요.';
+        statusMessage.style.color = '#c23d4b';
+        summaryOutput.value = '';
+        actionOutput.value = '';
+        materialOutput.value = materialText || '';
+        return;
+      }
+
+      statusMessage.style.color = '#5a6887';
+      statusMessage.textContent = '자동으로 정리 중입니다...';
+
+      window.requestAnimationFrame(() => {
+        const { entries, participants } = parseMeetingScript(meetingText);
+        const participantSummary = buildParticipantSummary(entries, participants);
+        const actionItems = extractActionItems(entries, participants);
+        const updatedMaterial = composeUpdatedMaterial(materialText, entries);
+
+        summaryOutput.value = participantSummary;
+        actionOutput.value = actionItems;
+        materialOutput.value = updatedMaterial;
+
+        statusMessage.textContent = '정리가 완료되었습니다.';
+        statusMessage.style.color = '#2f7a57';
+      });
+    });
+
+    function parseMeetingScript(rawText) {
+      const lines = rawText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+      const entries = [];
+      const participantSet = new Set();
+
+      const delimiterPattern = /^([^:：]+)[:：]\s*(.+)$/;
+
+      lines.forEach((line) => {
+        const match = line.match(delimiterPattern);
+        if (match) {
+          const speaker = match[1].trim();
+          const speech = match[2].trim();
+          if (speaker && speech) {
+            entries.push({ speaker, speech });
+            participantSet.add(speaker);
+          }
+        }
+      });
+
+      return { entries, participants: Array.from(participantSet) };
+    }
+
+    function buildParticipantSummary(entries, participants) {
+      if (!entries.length) {
+        return '유효한 회의 발언을 찾지 못했습니다. "이름: 발언" 형식을 확인해주세요.';
+      }
+
+      const summaryMap = new Map();
+
+      participants.forEach((name) => {
+        summaryMap.set(name, []);
+      });
+
+      entries.forEach(({ speaker, speech }) => {
+        if (!summaryMap.has(speaker)) {
+          summaryMap.set(speaker, []);
+        }
+        summaryMap.get(speaker).push(speech);
+      });
+
+      const summaryChunks = [];
+
+      summaryMap.forEach((statements, speaker) => {
+        if (!statements.length) return;
+        const combinedText = statements.join(' ');
+        const keywords = extractTopKeywords(combinedText, 5);
+        const trimmedStatements = statements.slice(0, 5).map((text) => `- ${truncateSentence(text)}`);
+        const section = [`${speaker} (발언 ${statements.length}회)`, `주요 키워드: ${keywords.join(', ') || '키워드 파악 불가'}`, '주요 발언:'].concat(trimmedStatements);
+        summaryChunks.push(section.join('\n'));
+      });
+
+      return summaryChunks.join('\n\n');
+    }
+
+    function extractTopKeywords(text, limit = 5) {
+      const sanitized = text
+        .replace(/[^0-9a-zA-Z가-힣\s]/g, ' ')
+        .toLowerCase();
+      const tokens = sanitized.split(/\s+/).filter((token) => token && !STOPWORDS.includes(token));
+      const frequency = new Map();
+
+      tokens.forEach((token) => {
+        const score = frequency.get(token) || 0;
+        frequency.set(token, score + 1);
+      });
+
+      return Array.from(frequency.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit)
+        .map(([token]) => token)
+        .filter(Boolean);
+    }
+
+    function truncateSentence(text, maxLength = 110) {
+      if (text.length <= maxLength) return text;
+      return text.slice(0, maxLength - 1).trim() + '…';
+    }
+
+    function extractActionItems(entries, participants) {
+      const items = [];
+
+      entries.forEach(({ speaker, speech }) => {
+        if (!ACTION_KEYWORDS.some((keyword) => speech.toLowerCase().includes(keyword))) {
+          return;
+        }
+
+        const assignee = resolveAssignee(speaker, speech, participants);
+        const deadlineInfo = resolveDeadline(speech);
+        const taskDescription = buildActionDescription(speech, assignee, deadlineInfo.original);
+
+        items.push(`- 담당자: ${assignee} | 내용: ${taskDescription} | 기한: ${deadlineInfo.text}`);
+      });
+
+      if (!items.length) {
+        return '행동 항목으로 분류할 발언을 찾지 못했습니다. 요청/지시가 포함된 문장에 "~해야", "~해주세요" 등을 사용해보세요.';
+      }
+
+      return items.join('\n');
+    }
+
+    function resolveAssignee(speaker, speech, participants) {
+      let detectedAssignee = speaker;
+
+      participants.forEach((name) => {
+        if (name === speaker) return;
+        const namePattern = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(님|씨|에게|한테|은|는|이|가|께)', 'g');
+        if (namePattern.test(speech)) {
+          detectedAssignee = name;
+        }
+      });
+
+      return detectedAssignee;
+    }
+
+    function resolveDeadline(text) {
+      const patterns = [
+        /(\d{1,2})월\s*(\d{1,2})일까지/,
+        /(\d{1,2})일까지/,
+        /(\d{1,2})일\s*내로/,
+        /(이번주|이번 주|다음주|다음 주|내일|오늘|주말|금요일|월요일)(까지)?/,
+        /(EOD|eod|end of day|due by [^,.]+)/
+      ];
+
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) {
+          return { text: match[0].trim(), original: match[0] };
+        }
+      }
+
+      return { text: '기한 미정', original: '' };
+    }
+
+    function buildActionDescription(text, assignee, deadlineFragment) {
+      let description = text;
+      if (deadlineFragment) {
+        description = description.replace(deadlineFragment, '').trim();
+      }
+
+      const assigneePattern = new RegExp(assignee.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(님|씨|이|가|은|는|께|에게|한테)?');
+      description = description.replace(assigneePattern, '').trim();
+
+      description = description.replace(/(해주세요|해 주세요|해야|진행해 주세요|진행해주세요|부탁드립니다|부탁드려요|확인 부탁)/g, '').trim();
+      description = description.replace(/^[:;\-\s]+/, '');
+      description = description.replace(/\s+/g, ' ');
+
+      if (!description) {
+        description = text.trim();
+      }
+
+      if (description.length > 120) {
+        description = description.slice(0, 119).trim() + '…';
+      }
+
+      return description;
+    }
+
+    function composeUpdatedMaterial(materialText, entries) {
+      const cleanMaterial = materialText ? materialText.trim() : '';
+      const updates = new Set();
+
+      entries.forEach(({ speech }) => {
+        const normalizedSpeech = speech.toLowerCase();
+        if (UPDATE_KEYWORDS.some((keyword) => normalizedSpeech.includes(keyword))) {
+          updates.add(speech.trim());
+        }
+      });
+
+      const updateList = Array.from(updates);
+
+      let suggestions = '';
+      if (updateList.length) {
+        suggestions = updateList.map((line, index) => `${index + 1}. ${line}`).join('\n');
+      } else {
+        suggestions = '회의에서 명확한 업데이트 항목이 언급되지 않았습니다. 변경/결정 관련 키워드를 추가하면 자동으로 정리됩니다.';
+      }
+
+      if (!cleanMaterial) {
+        return '[기존 자료 미입력]\n\n---\n[업데이트 제안]\n' + suggestions;
+      }
+
+      return `${cleanMaterial}\n\n---\n[업데이트 제안]\n${suggestions}`;
+    }
+  </script>
+</body>
+</html>
