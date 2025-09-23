@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>간단한 핀볼</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="wrapper">
+      <header>
+        <h1>간단한 핀볼 게임</h1>
+        <p class="intro">
+          좌우 방향키로 플리퍼를 조작해 공을 떨어뜨리지 마세요! 스페이스바로 게임을
+          다시 시작할 수 있습니다.
+        </p>
+      </header>
+      <canvas id="game" width="800" height="600" aria-label="핀볼 게임 영역"></canvas>
+      <section class="hud" aria-live="polite">
+        <p>점수: <span id="score">0</span></p>
+        <p>남은 공: <span id="balls">3</span></p>
+      </section>
+      <footer>
+        <p class="hint">←/→ : 플리퍼 조작 · Space : 다시 시작</p>
+      </footer>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>
